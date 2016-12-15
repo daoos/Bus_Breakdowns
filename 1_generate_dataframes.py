@@ -68,7 +68,7 @@ def get_dataframe(name, file_path, nrows, cols, colnames, date_cols, csv_type, d
         if csv_type == "Breakdown":
             dataframe = dataframe[[x in list_of_valid_breakdowns for x in dataframe['breakdown']]]
         else:
-            Faults['duration'] = [float(x) if isFloat(x) else minimum_time for x in Faults['duration']]
+            dataframe['duration'] = [float(x) if isFloat(x) else minimum_time for x in dataframe['duration']]
         pickle.dump(dataframe, open(name + '.pkl', 'wb'))
         print(name + " caching Finished")
         return dataframe
@@ -79,7 +79,7 @@ def generateDataframes(use_errorSystem, n): #opens the documents necessary for t
     system_break = 6
     Breakdowns = get_dataframe(name="Breakdowns",
                                file_path='MH_PM_CAD_AVM_SRWO_MASH_2016.csv',
-                               nrows=None,
+                               nrows=n,
                                cols=[1, 3, 4, system_break],
                                colnames=['BreakdownType', 'bus_id', 'date', 'breakdown'],
                                date_cols=[2],
@@ -91,8 +91,8 @@ def generateDataframes(use_errorSystem, n): #opens the documents necessary for t
                             colnames=['bus_id', 'date', 'fault', 'duration'],
                             date_cols=[1],
                             csv_type="Faults")
-    predictor_faults = get_dataframe(name="test_faults",
-                            file_path='MH_PM_AVM_RAW_OCT2016.csv',
+    predictor_faults = get_dataframe(name="predictor_faults",
+                            file_path='MH_PM_AVM_RAW_OCT2016.psv',
                             nrows=n,
                             cols=[0, 2, errorIndex[0], 10],
                             colnames=['bus_id', 'date', 'fault', 'duration'],
@@ -122,17 +122,30 @@ def create_snapshots(df, id, Breakdowns):
         f.close()
 
 
+def create_frame():
+    if os.path.exists('thing.pkl') and os.path.exists('Breakdowns.pkl'):
+        print('Everything was cached')
+        return pickle.load(open('thing.pkl', 'rb')), pickle.load(open('Breakdowns.pkl', 'rb'))
+    else:
+        Faults, Breakdowns = generateDataframes(use_errorSystem, n)
+        print('frames loaded')
+        Faults = pd.get_dummies(Faults, columns=['fault'])
+        if use_duration:
+            Faults.loc[:, 3:] = Faults.iloc[:, 3:].rmul(Faults['duration'], axis='index').astype(np.float32)
+        Faults.drop('duration', axis=1, inplace=True)
+        faults_by_bus = Faults.groupby('bus_id')
+        print('grouped by faults')
+        pickle.dump(faults_by_bus, open('thing.pkl', 'wb'))
+        return faults_by_bus, Breakdowns
+
 if __name__ == "__main__":
     print('Program beginning')
-    Faults, Breakdowns = generateDataframes(use_errorSystem, n)
-    print('frames loaded')
-    Faults = pd.get_dummies(Faults, columns=['fault'])
-    if use_duration:
-        Faults.loc[:, 3:] = Faults.iloc[:, 3:].rmul(Faults['duration'], axis='index').astype(np.float32)
-    Faults.drop('duration', axis=1, inplace=True)
-    faults_by_bus = Faults.groupby('bus_id')
-    print('grouped by faults')
-    pickle.dump(faults_by_bus, open('thing.pkl', 'wb')),
-    pool = multiprocessing.Pool()
+    faults_by_bus, Breakdowns = create_frame()
+    jobs = []
     for bus_id, bus_df in tqdm(faults_by_bus):
-            pool.apply(create_snapshots, args=(bus_df.copy(), bus_id, Breakdowns.copy(),))
+        while len(jobs) > 500:
+            jobs = [x for x in jobs if x.is_alive()]
+            time.sleep(5)
+        p = multiprocessing.Process(target=create_snapshots, args=(bus_df.copy(), bus_id, Breakdowns.copy(),))
+        p.start()
+        jobs.append(p)
